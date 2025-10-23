@@ -7,7 +7,7 @@ plugins {
 }
 
 val libName = "skeo"
-val libVersion = "0.3.0"
+val libVersion = "0.3.1"
 val artifact = "dev.datlag.skeo"
 
 group = artifact
