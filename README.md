@@ -20,6 +20,8 @@ final filtered = Skeo.filterNotSample(streams);
 
 ## Flutter Example starten
 
+Das Example enthält einen direkten Hoster-Flow mit voreingestelltem VOE-Link (`https://voe.sx/d6ur6cbwu4og`): Die App ruft `Skeo.resolveStreamsFromUrl(...)` auf, zeigt die aufgelösten Stream-URLs an und spielt den gewählten Stream sofort im eingebauten Videoplayer (`video_player`) ab.
+
 ```bash
 cd example
 flutter pub get
