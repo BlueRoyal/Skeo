@@ -54,7 +54,7 @@ class Skeo {
               (target) => _fetchDocument(target, effectiveClient, headers),
             );
 
-      return resolveStreamsFromDocument(redirected, sourceUrl: redirected.documentUri ?? firstUrl, hoster: fitted);
+      return resolveStreamsFromDocument(redirected, sourceUrl: redirected.baseUri ?? firstUrl, hoster: fitted);
     } finally {
       if (shouldClose) effectiveClient.close();
     }
@@ -87,7 +87,7 @@ class Skeo {
   static Future<Document> _fetchDocument(String url, http.Client client, Map<String, String> headers) async {
     final response = await client.get(Uri.parse(url), headers: headers);
     final doc = html_parser.parse(response.body);
-    doc.documentUri = url;
+    doc.baseUri = url;
     return doc;
   }
 
