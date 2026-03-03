@@ -1,13 +1,12 @@
-# Skeo (Dart/Flutter)
+# Skeo (Flutter Package)
 
-Dieses Repository wurde auf ein Dart-Package umgestellt, damit es direkt in Flutter-Projekten nutzbar ist.
+Skeo ist ein Flutter/Dart-Package zum Auflösen von Stream-URLs (z. B. `.mp4`, `.m3u8`) aus Embed-Seiten und bekannten Hostern.
 
 ## Installation
 
 ```yaml
 dependencies:
-  skeo:
-    path: ../skeo
+  skeo: ^1.0.0
 ```
 
 ## Verwendung
@@ -19,6 +18,14 @@ final streams = await Skeo.resolveStreamsFromUrl('https://example.com/embed/abc1
 final filtered = Skeo.filterNotSample(streams);
 ```
 
+## Flutter Example starten
+
+```bash
+cd example
+flutter pub get
+flutter run
+```
+
 ## API
 
 - `Skeo.resolveStreamsFromUrl(...)`
@@ -27,9 +34,27 @@ final filtered = Skeo.filterNotSample(streams);
 - `Skeo.filterReachable(...)`
 
 Unterstützte Hoster:
+
 - LuluVDO / LuluStream
 - MixDrop
 - Speedfiles
 - Streamtape
 - Vidmoly
 - VOE
+
+## Pub.dev Readiness
+
+Für eine Veröffentlichung sind jetzt die wichtigsten Basics enthalten:
+
+- `LICENSE`
+- `CHANGELOG.md`
+- Flutter-`example/` Projekt
+- Lints + Tests
+
+Vor dem Publish lokal prüfen:
+
+```bash
+flutter pub get
+flutter test
+dart pub publish --dry-run
+```
