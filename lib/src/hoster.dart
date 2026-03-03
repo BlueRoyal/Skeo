@@ -293,7 +293,8 @@ class VoeHoster extends Hoster {
       if (link != null) out.add(link);
     }
 
-    for (final script in document.querySelectorAll('script[type=application/json]')) {
+    for (final script in document.getElementsByTagName('script')) {
+      if ((script.attributes['type'] ?? '').trim().toLowerCase() != 'application/json') continue;
       final decoded = _decodeScriptPayload(script.text);
       if (decoded == null) continue;
       final source = resolveUrl(sourceUrl, decoded['source'] as String?);
