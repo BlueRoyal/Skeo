@@ -87,7 +87,7 @@ class MixDropHoster extends Hoster {
   static final instance = MixDropHoster._();
 
   final _urlRegex = RegExp(r'(mixdro?p\.(?:c[ho]|to|sx|bz|gl|club))/(?:f|e)/(\w+)', caseSensitive: false);
-  final _linkMatcher = RegExp(r'wurl=\s*[\'"](.+?)[\'"]', multiLine: true, caseSensitive: false);
+  final _linkMatcher = RegExp(r'wurl=\s*[\"](.+?)[\"]', multiLine: true, caseSensitive: false);
 
   @override
   String get name => 'MixDrop';
@@ -152,8 +152,8 @@ class StreamtapeHoster extends Hoster {
   static final instance = StreamtapeHoster._();
 
   final _urlRegex = RegExp(r'(s(?:tr)?(?:eam|have)?(?:ta?p?e?|cloud|adblock(?:plus|er))\.(?:com|cloud|net|pe|site|link|cc|online|fun|cash|to|xyz))/(?:e|v)/([0-9a-zA-Z]+)', caseSensitive: false);
-  final _substringLinkMatcher = RegExp(r"ById\('.+?=\s*([\"']//[^;<]+)", caseSensitive: false);
-  final _partMatcher = RegExp(r"[\"']?(\S+)[\"']\S*\s*\([\"'](\S+)[\"']", multiLine: true, caseSensitive: false);
+  final _substringLinkMatcher = RegExp(r'ById\(.+?=\s*([\"]//[^;<]+)', caseSensitive: false);
+  final _partMatcher = RegExp(r'[\"]?(\S+)[\"]\S*\s*\([\"](\S+)[\"]', multiLine: true, caseSensitive: false);
   final _substringMatcher = RegExp(r'substring\((\d+)', multiLine: true, caseSensitive: false);
   final _botlinkMatcher = RegExp(r"'botlink.*innerHTML.*?'(.*)'.*?\+.*?'(.*)'", multiLine: true, caseSensitive: false);
 
@@ -253,8 +253,8 @@ class VoeHoster extends Hoster {
   static final instance = VoeHoster._();
 
   final _urlRegex = RegExp(r'(voe\.sx)/(\w+)', caseSensitive: false);
-  final _hlsMatcher = RegExp(r'[\'"]hls[\'"]:\s*[\'"](.*)[\'"]', multiLine: true, caseSensitive: false);
-  final _mp4Matcher = RegExp(r'[\'"]mp4[\'"]:\s*[\'"](.*)[\'"]', multiLine: true, caseSensitive: false);
+  final _hlsMatcher = RegExp(r'[\"]hls[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
+  final _mp4Matcher = RegExp(r'[\"]mp4[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
   final _base64Matcher = RegExp(r"var a168c='([^']+)'", multiLine: true, caseSensitive: false);
 
   final List<String> _junkParts = const ['@\$', '^^', '~@', '%?', '*~', '!!', '#&'];
@@ -321,7 +321,7 @@ class VoeHoster extends Hoster {
   String? _redirectLocation(Document document) {
     final script = document.getElementsByTagName('script').isEmpty ? null : document.getElementsByTagName('script').first.text;
     if (script == null || script.isEmpty) return null;
-    final m = RegExp(r'window.location.href\s*=\s*[\'"](https.*)[\'"]', caseSensitive: false).firstMatch(script);
+    final m = RegExp(r'window.location.href\s*=\s*[\"](https.*)[\"]', caseSensitive: false).firstMatch(script);
     return m?.group(1)?.trim();
   }
 
