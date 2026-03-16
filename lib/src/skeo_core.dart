@@ -9,6 +9,18 @@ import 'url_utils.dart';
 class Skeo {
   Skeo._();
 
+  /// Default browser-like headers to avoid 403 blocks from hosters
+  static const Map<String, String> _defaultHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,de;q=0.8',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+  };
+
   static final RegExp _cleanRegex = RegExp(
     r'http(s?)://\S+\.(mp4|m3u8|webm|mkv|flv|vob|drc|gifv|avi|((m?)(2?)ts)|mov|qt|wmv|yuv|rm((vb)?)|viv|asf|amv|m4p|m4v|mp2|mp((e)?)g|mpe|mpv|m2v|svi|3gp|3g2|mxf|roq|nsv|f4v|f4p|f4a|f4b|dll)',
     caseSensitive: false,
@@ -41,17 +53,28 @@ class Skeo {
     final effectiveClient = client ?? http.Client();
     final shouldClose = client == null;
 
+    // Merge default browser headers with user-provided headers
+    // User headers take precedence
+    final effectiveHeaders = {..._defaultHeaders, ...headers};
+
     try {
       final urlHoster = hoster ?? Hoster.autoFromUrl(url);
       final firstUrl = urlHoster?.updateUrl(url) ?? url;
-      final document = await _fetchDocument(firstUrl, effectiveClient, headers);
+
+      // Add Referer header matching the hoster domain
+      final uri = Uri.tryParse(firstUrl);
+      if (uri != null && !effectiveHeaders.containsKey('Referer')) {
+        effectiveHeaders['Referer'] = '${uri.scheme}://${uri.host}/';
+      }
+
+      final document = await _fetchDocument(firstUrl, effectiveClient, effectiveHeaders);
       final fitted = urlHoster ?? Hoster.autoFromDocument(document, firstUrl);
       final redirected = fitted == null
           ? document
           : await fitted.redirect(
               document,
               firstUrl,
-              (target) => _fetchDocument(target, effectiveClient, headers),
+              (target) => _fetchDocument(target, effectiveClient, effectiveHeaders),
             );
 
       return resolveStreamsFromDocument(redirected, sourceUrl: redirected.baseUri ?? firstUrl, hoster: fitted);
@@ -69,11 +92,12 @@ class Skeo {
   }) async {
     final effectiveClient = client ?? http.Client();
     final shouldClose = client == null;
+    final effectiveHeaders = {..._defaultHeaders, ...headers};
 
     try {
       final reachable = <String>{};
       for (final link in links.toSet()) {
-        final response = await effectiveClient.head(Uri.parse(link), headers: headers);
+        final response = await effectiveClient.head(Uri.parse(link), headers: effectiveHeaders);
         if (response.statusCode >= 200 && response.statusCode < 300) {
           reachable.add(link);
         }
@@ -86,6 +110,16 @@ class Skeo {
 
   static Future<Document> _fetchDocument(String url, http.Client client, Map<String, String> headers) async {
     final response = await client.get(Uri.parse(url), headers: headers);
+
+    // Handle redirects that come as HTML (window.location.href = ...)
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final doc = html_parser.parse(response.body);
+      doc.baseUri = url;
+      return doc;
+    }
+
+    // If we got a non-200 status, still try to parse (some hosters return
+    // content with non-200 codes) but also return what we have
     final doc = html_parser.parse(response.body);
     doc.baseUri = url;
     return doc;
