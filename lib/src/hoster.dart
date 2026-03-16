@@ -257,12 +257,11 @@ class VoeHoster extends Hoster {
   final _hlsMatcher = RegExp(r'[\"]hls[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
   final _mp4Matcher = RegExp(r'[\"]mp4[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
   final _base64Matcher = RegExp(r"var\s+\w+\s*=\s*'([A-Za-z0-9+/=]{50,})'", multiLine: true, caseSensitive: false);
-
-  final _genericBase64Matcher = RegExp(r"""['"]\s*([A-Za-z0-9+/=]{100,})\s*['"]""", multiLine: true, caseSensitive: false);
-  final _directHlsMatcher = RegExp(r"""(https?://[^\s'"<>]+\.m3u8[^\s'"<>]*)""", multiLine: true, caseSensitive: false);
-  final _directMp4Matcher = RegExp(r"""(https?://[^\s'"<>]+\.mp4[^\s'"<>]*)""", multiLine: true, caseSensitive: false);
-  final _sourcesMatcher = RegExp(r"""sources\s*[:=]\s*\[\s*\{\s*(?:file|src)\s*:\s*['"](https?://[^'"]+)['"]""", multiLine: true, caseSensitive: false);
-  final _fileMatcher = RegExp(r"""['"]?file['"]?\s*[:=]\s*['"](https?://[^'"]+\.(?:m3u8|mp4)[^'"]*)['"]""", multiLine: true, caseSensitive: false);
+  final _genericBase64Matcher = RegExp(r"""['"]([A-Za-z0-9+/=]{100,})['"]""", multiLine: true, caseSensitive: false);
+  final _directHlsMatcher = RegExp(r'(https?://[^\s<>"]+\.m3u8[^\s<>"]*)', multiLine: true, caseSensitive: false);
+  final _directMp4Matcher = RegExp(r'(https?://[^\s<>"]+\.mp4[^\s<>"]*)', multiLine: true, caseSensitive: false);
+  final _sourcesMatcher = RegExp(r"""sources\s*[:=]\s*\[\s*\{\s*(?:file|src)\s*:\s*['"]([^'"]+)['"]""", multiLine: true, caseSensitive: false);
+  final _voeFileMatcher = RegExp(r"""['"]?file['"]?\s*[:=]\s*['"]([^'"]+\.(?:m3u8|mp4)[^'"]*)['"]""", multiLine: true, caseSensitive: false);
 
   final List<String> _junkParts = const ['@\$', '^^', '~@', '%?', '*~', '!!', '#&'];
 
@@ -295,7 +294,7 @@ class VoeHoster extends Hoster {
     final location = _redirectLocation(document);
     print('[VOE] redirect: location=$location');
     if (location == null) return document;
-    print('[VOE] redirect: following redirect to $location');
+    print('[VOE] redirect: following to $location');
     return fetchDocument(location);
   }
 
@@ -306,9 +305,7 @@ class VoeHoster extends Hoster {
 
     print('[VOE] ===== resolveStreams START =====');
     print('[VOE] HTML length: ${html.length}');
-    print('[VOE] sourceUrl: $sourceUrl');
 
-    // Log script tags
     final scripts = document.getElementsByTagName('script');
     print('[VOE] Found ${scripts.length} script tags');
     for (var i = 0; i < scripts.length; i++) {
@@ -318,70 +315,54 @@ class VoeHoster extends Hoster {
       final textLen = s.text.length;
       print('[VOE]   script[$i]: type=$type, src=$src, textLength=$textLen');
       if (textLen > 0 && textLen < 300) {
-        print('[VOE]   script[$i] content: ${s.text}');
+        print('[VOE]   content: ${s.text}');
       } else if (textLen >= 300) {
-        print('[VOE]   script[$i] preview: ${s.text.substring(0, 200)}...');
+        print('[VOE]   preview: ${s.text.substring(0, 200)}...');
       }
     }
 
     // 1) Classic "hls"/"mp4" JSON keys
     final hlsMatches = _hlsMatcher.allMatches(html).toList();
-    print('[VOE] Step 1a - hlsMatcher: ${hlsMatches.length} matches');
+    print('[VOE] Step 1a - hlsMatcher: ${hlsMatches.length}');
     for (final m in hlsMatches) {
-      print('[VOE]   hls raw: "${m.group(1)}"');
       final link = _tryDecodeUrl(sourceUrl, m.group(1));
-      print('[VOE]   hls decoded: $link');
       if (link != null) out.add(link);
     }
-
     final mp4Matches = _mp4Matcher.allMatches(html).toList();
-    print('[VOE] Step 1b - mp4Matcher: ${mp4Matches.length} matches');
+    print('[VOE] Step 1b - mp4Matcher: ${mp4Matches.length}');
     for (final m in mp4Matches) {
-      print('[VOE]   mp4 raw: "${m.group(1)}"');
       final link = _tryDecodeUrl(sourceUrl, m.group(1));
-      print('[VOE]   mp4 decoded: $link');
       if (link != null) out.add(link);
     }
 
     // 2) application/json script tags
-    print('[VOE] Step 2 - checking application/json scripts');
+    print('[VOE] Step 2 - application/json scripts');
     for (final script in scripts) {
       if ((script.attributes['type'] ?? '').trim().toLowerCase() != 'application/json') continue;
-      print('[VOE]   Found application/json script, length=${script.text.length}');
-      final previewLen = script.text.length > 100 ? 100 : script.text.length;
-      print('[VOE]   Preview: ${script.text.substring(0, previewLen)}...');
+      print('[VOE]   Found one, length=${script.text.length}');
       final decoded = _decodeScriptPayload(script.text);
-      print('[VOE]   Decoded payload: $decoded');
+      print('[VOE]   Decoded: $decoded');
       if (decoded == null) continue;
       final source = resolveUrl(sourceUrl, decoded['source'] as String?);
       final direct = resolveUrl(sourceUrl, decoded['direct_access_url'] as String?);
-      print('[VOE]   source=$source, direct=$direct');
       if (source != null) out.add(source);
       if (direct != null) out.add(direct);
     }
 
-    // 3) Base64 encoded variable
-    final base64Matches = _base64Matcher.allMatches(html).toList();
-    print('[VOE] Step 3 - base64Matcher: ${base64Matches.length} matches');
-    for (final m in base64Matches) {
-      final payload = m.group(1);
-      final pLen = (payload?.length ?? 0) > 80 ? 80 : (payload?.length ?? 0);
-      print('[VOE]   base64 payload (first $pLen): ${payload?.substring(0, pLen)}...');
-      _tryDecodeBase64Payload(sourceUrl, payload, out);
+    // 3) Base64 variable
+    final b64Matches = _base64Matcher.allMatches(html).toList();
+    print('[VOE] Step 3 - base64Matcher: ${b64Matches.length}');
+    for (final m in b64Matches) {
+      _tryDecodeBase64Payload(sourceUrl, m.group(1), out);
     }
 
     // 4) Generic base64
     if (out.isEmpty) {
-      final genericMatches = _genericBase64Matcher.allMatches(html).toList();
-      print('[VOE] Step 4 - genericBase64: ${genericMatches.length} matches');
-      for (final m in genericMatches) {
-        final payload = m.group(1);
-        final pLen = (payload?.length ?? 0) > 80 ? 80 : (payload?.length ?? 0);
-        print('[VOE]   generic base64 (first $pLen): ${payload?.substring(0, pLen)}...');
-        _tryDecodeBase64Payload(sourceUrl, payload, out);
+      final genMatches = _genericBase64Matcher.allMatches(html).toList();
+      print('[VOE] Step 4 - genericBase64: ${genMatches.length}');
+      for (final m in genMatches) {
+        _tryDecodeBase64Payload(sourceUrl, m.group(1), out);
       }
-    } else {
-      print('[VOE] Step 4 - skipped (already have results)');
     }
 
     // 5) Direct URLs
@@ -391,7 +372,6 @@ class VoeHoster extends Hoster {
       print('[VOE] Step 5 - directHls: ${hlsDirect.length}, directMp4: ${mp4Direct.length}');
       for (final m in hlsDirect) {
         final url = m.group(1);
-        print('[VOE]   direct hls: $url');
         if (url != null && !url.contains('sample') && !url.contains('thumbnail')) {
           final resolved = resolveUrl(sourceUrl, url);
           if (resolved != null) out.add(resolved);
@@ -399,73 +379,58 @@ class VoeHoster extends Hoster {
       }
       for (final m in mp4Direct) {
         final url = m.group(1);
-        print('[VOE]   direct mp4: $url');
         if (url != null && !url.contains('sample') && !url.contains('thumbnail')) {
           final resolved = resolveUrl(sourceUrl, url);
           if (resolved != null) out.add(resolved);
         }
       }
-    } else {
-      print('[VOE] Step 5 - skipped');
     }
 
     // 6) "sources"/"file" patterns
     if (out.isEmpty) {
-      final sourcesMatches = _sourcesMatcher.allMatches(html).toList();
-      final fileMatches = _fileMatcher.allMatches(html).toList();
-      print('[VOE] Step 6 - sources: ${sourcesMatches.length}, file: ${fileMatches.length}');
-      for (final m in sourcesMatches) {
-        print('[VOE]   sources: ${m.group(1)}');
+      final srcMatches = _sourcesMatcher.allMatches(html).toList();
+      final fileMatches = _voeFileMatcher.allMatches(html).toList();
+      print('[VOE] Step 6 - sources: ${srcMatches.length}, file: ${fileMatches.length}');
+      for (final m in srcMatches) {
         final resolved = resolveUrl(sourceUrl, m.group(1));
         if (resolved != null) out.add(resolved);
       }
       for (final m in fileMatches) {
-        print('[VOE]   file: ${m.group(1)}');
         final resolved = resolveUrl(sourceUrl, m.group(1));
         if (resolved != null) out.add(resolved);
       }
-    } else {
-      print('[VOE] Step 6 - skipped');
     }
 
-    print('[VOE] ===== resolveStreams END: ${out.length} results =====');
+    print('[VOE] ===== END: ${out.length} results =====');
     print('[VOE] Results: $out');
     return out;
   }
 
   void _tryDecodeBase64Payload(String sourceUrl, String? payload, Set<String> out) {
     if (payload == null || payload.isEmpty) return;
-    // Method A: base64 → reversed → JSON
     try {
       final decoded = utf8.decode(base64.decode(payload));
       final reversed = decoded.split('').reversed.join();
-      final previewLen = reversed.length > 100 ? 100 : reversed.length;
-      print('[VOE]     Method A reversed (first $previewLen): ${reversed.substring(0, previewLen)}...');
       final json_ = json.decode(reversed) as Map<String, dynamic>;
-      print('[VOE]     Method A keys: ${json_.keys}');
+      print('[VOE]   base64 Method A keys: ${json_.keys}');
       final source = resolveUrl(sourceUrl, json_['source'] as String?);
       final direct = resolveUrl(sourceUrl, json_['direct_access_url'] as String?);
-      print('[VOE]     Method A: source=$source, direct=$direct');
       if (source != null) out.add(source);
       if (direct != null) out.add(direct);
       return;
     } catch (e) {
-      print('[VOE]     Method A failed: $e');
+      print('[VOE]   base64 Method A failed: $e');
     }
-    // Method B: base64 → JSON (not reversed)
     try {
       final decoded = utf8.decode(base64.decode(payload));
-      final previewLen = decoded.length > 100 ? 100 : decoded.length;
-      print('[VOE]     Method B decoded (first $previewLen): ${decoded.substring(0, previewLen)}...');
       final json_ = json.decode(decoded) as Map<String, dynamic>;
-      print('[VOE]     Method B keys: ${json_.keys}');
+      print('[VOE]   base64 Method B keys: ${json_.keys}');
       final source = resolveUrl(sourceUrl, json_['source'] as String?);
       final direct = resolveUrl(sourceUrl, json_['direct_access_url'] as String?);
-      print('[VOE]     Method B: source=$source, direct=$direct');
       if (source != null) out.add(source);
       if (direct != null) out.add(direct);
     } catch (e) {
-      print('[VOE]     Method B failed: $e');
+      print('[VOE]   base64 Method B failed: $e');
     }
   }
 
@@ -504,17 +469,14 @@ class VoeHoster extends Hoster {
     try {
       if (payload.length < 4) return null;
       final jsonText = payload.substring(2, payload.length - 2);
-      print('[VOE]     _decodeScriptPayload: input length=${payload.length}');
       final step1 = _shiftLetters(jsonText);
       final step2 = _replaceJunk(step1).replaceAll('_', '');
       final step3 = utf8.decode(base64.decode(step2));
       final step4 = _shiftBack(step3, 3);
       final step5 = utf8.decode(base64.decode(step4.split('').reversed.join())).trim();
-      final previewLen = step5.length > 100 ? 100 : step5.length;
-      print('[VOE]     _decodeScriptPayload result (first $previewLen): ${step5.substring(0, previewLen)}...');
       return json.decode(step5) as Map<String, dynamic>;
     } catch (e) {
-      print('[VOE]     _decodeScriptPayload FAILED: $e');
+      print('[VOE]   _decodeScriptPayload FAILED: $e');
       return null;
     }
   }
@@ -523,11 +485,8 @@ class VoeHoster extends Hoster {
     if (raw == null || raw.trim().isEmpty) return null;
     final trimmed = raw.trim();
     try {
-      final decoded = utf8.decode(base64.decode(trimmed));
-      print('[VOE]     _tryDecodeUrl: base64 -> "$decoded"');
-      return resolveUrl(sourceUrl, decoded);
+      return resolveUrl(sourceUrl, utf8.decode(base64.decode(trimmed)));
     } catch (_) {
-      print('[VOE]     _tryDecodeUrl: not base64, raw="$trimmed"');
       return resolveUrl(sourceUrl, trimmed);
     }
   }
