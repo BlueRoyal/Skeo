@@ -79,28 +79,33 @@ class Skeo {
       print('[SKEO] Headers: $effectiveHeaders');
 
       print('[SKEO] Fetching document...');
-      final document = await _fetchDocument(firstUrl, effectiveClient, effectiveHeaders);
-      print('[SKEO] Document fetched, baseUri=${document.baseUri}');
+      final fetchResult = await _fetchDocument(firstUrl, effectiveClient, effectiveHeaders);
+      final document = fetchResult.document;
+      var currentUrl = fetchResult.url;
+      print('[SKEO] Document fetched, url=$currentUrl');
 
-      final fitted = urlHoster ?? Hoster.autoFromDocument(document, firstUrl);
+      final fitted = urlHoster ?? Hoster.autoFromDocument(document, currentUrl);
       print('[SKEO] Fitted hoster after document check: ${fitted?.name ?? "NONE"}');
 
-      final redirected = fitted == null
-          ? document
-          : await fitted.redirect(
-              document,
-              firstUrl,
-              (target) {
-                print('[SKEO] Following redirect to: $target');
-                return _fetchDocument(target, effectiveClient, effectiveHeaders);
-              },
-            );
-
-      if (redirected != document) {
-        print('[SKEO] Redirect happened, new baseUri=${redirected.baseUri}');
+      Document redirected = document;
+      if (fitted != null) {
+        redirected = await fitted.redirect(
+          document,
+          currentUrl,
+          (target) async {
+            print('[SKEO] Following redirect to: $target');
+            final r = await _fetchDocument(target, effectiveClient, effectiveHeaders);
+            currentUrl = r.url;
+            return r.document;
+          },
+        );
       }
 
-      final results = resolveStreamsFromDocument(redirected, sourceUrl: redirected.baseUri ?? firstUrl, hoster: fitted);
+      if (redirected != document) {
+        print('[SKEO] Redirect happened, new url=$currentUrl');
+      }
+
+      final results = resolveStreamsFromDocument(redirected, sourceUrl: currentUrl, hoster: fitted);
       print('[SKEO] ========== FINAL RESULTS: $results ==========');
       return results;
     } catch (e, st) {
@@ -137,19 +142,17 @@ class Skeo {
     }
   }
 
-  static Future<Document> _fetchDocument(String url, http.Client client, Map<String, String> headers) async {
+  static Future<_FetchResult> _fetchDocument(String url, http.Client client, Map<String, String> headers) async {
     print('[SKEO] _fetchDocument: GET $url');
     final response = await client.get(Uri.parse(url), headers: headers);
-    print('[SKEO] _fetchDocument: status=${response.statusCode}, content-length=${response.body.length}');
+    print('[SKEO] _fetchDocument: status=${response.statusCode}, body length=${response.body.length}');
     print('[SKEO] _fetchDocument: response headers=${response.headers}');
 
-    // Log first 500 chars of body for debugging
     final preview = response.body.length > 500 ? response.body.substring(0, 500) : response.body;
     print('[SKEO] _fetchDocument: body preview:\n$preview');
 
     final doc = html_parser.parse(response.body);
-    doc.baseUri = url;
-    return doc;
+    return _FetchResult(doc, url);
   }
 
   static Set<String> _videoSources(Document document, String sourceUrl) {
@@ -172,4 +175,10 @@ class Skeo {
 
     return {...clean, ...query}.map((v) => resolveUrl(sourceUrl, v)).whereType<String>().toSet();
   }
+}
+
+class _FetchResult {
+  final Document document;
+  final String url;
+  _FetchResult(this.document, this.url);
 }
