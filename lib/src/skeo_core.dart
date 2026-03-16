@@ -9,7 +9,6 @@ import 'url_utils.dart';
 class Skeo {
   Skeo._();
 
-  /// Default browser-like headers to avoid 403 blocks from hosters
   static const Map<String, String> _defaultHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
         'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -35,12 +34,21 @@ class Skeo {
 
   static Set<String> resolveStreamsFromDocument(Document document, {String sourceUrl = '', Hoster? hoster}) {
     final fitted = hoster ?? Hoster.autoFromDocument(document, sourceUrl);
+    print('[SKEO] resolveStreamsFromDocument: hoster=${fitted?.name ?? "null"}, sourceUrl=$sourceUrl');
+
     final hosterSpecific = fitted?.resolveStreams(document, sourceUrl) ?? const <String>{};
+    print('[SKEO] hosterSpecific results: $hosterSpecific');
+
+    final videoSources = _videoSources(document, sourceUrl);
+    print('[SKEO] videoSources results: $videoSources');
+
+    final videosInDoc = _videosInDocument(document, sourceUrl);
+    print('[SKEO] videosInDocument results: $videosInDoc');
 
     return {
       ...hosterSpecific,
-      ..._videoSources(document, sourceUrl),
-      ..._videosInDocument(document, sourceUrl),
+      ...videoSources,
+      ...videosInDoc,
     };
   }
 
@@ -50,34 +58,55 @@ class Skeo {
     Hoster? hoster,
     Map<String, String> headers = const {},
   }) async {
+    print('[SKEO] ========== resolveStreamsFromUrl ==========');
+    print('[SKEO] Input URL: $url');
+
     final effectiveClient = client ?? http.Client();
     final shouldClose = client == null;
-
-    // Merge default browser headers with user-provided headers
-    // User headers take precedence
     final effectiveHeaders = {..._defaultHeaders, ...headers};
 
     try {
       final urlHoster = hoster ?? Hoster.autoFromUrl(url);
-      final firstUrl = urlHoster?.updateUrl(url) ?? url;
+      print('[SKEO] Detected hoster: ${urlHoster?.name ?? "NONE"}');
 
-      // Add Referer header matching the hoster domain
+      final firstUrl = urlHoster?.updateUrl(url) ?? url;
+      print('[SKEO] URL after updateUrl: $firstUrl');
+
       final uri = Uri.tryParse(firstUrl);
       if (uri != null && !effectiveHeaders.containsKey('Referer')) {
         effectiveHeaders['Referer'] = '${uri.scheme}://${uri.host}/';
       }
+      print('[SKEO] Headers: $effectiveHeaders');
 
+      print('[SKEO] Fetching document...');
       final document = await _fetchDocument(firstUrl, effectiveClient, effectiveHeaders);
+      print('[SKEO] Document fetched, baseUri=${document.baseUri}');
+
       final fitted = urlHoster ?? Hoster.autoFromDocument(document, firstUrl);
+      print('[SKEO] Fitted hoster after document check: ${fitted?.name ?? "NONE"}');
+
       final redirected = fitted == null
           ? document
           : await fitted.redirect(
               document,
               firstUrl,
-              (target) => _fetchDocument(target, effectiveClient, effectiveHeaders),
+              (target) {
+                print('[SKEO] Following redirect to: $target');
+                return _fetchDocument(target, effectiveClient, effectiveHeaders);
+              },
             );
 
-      return resolveStreamsFromDocument(redirected, sourceUrl: redirected.baseUri ?? firstUrl, hoster: fitted);
+      if (redirected != document) {
+        print('[SKEO] Redirect happened, new baseUri=${redirected.baseUri}');
+      }
+
+      final results = resolveStreamsFromDocument(redirected, sourceUrl: redirected.baseUri ?? firstUrl, hoster: fitted);
+      print('[SKEO] ========== FINAL RESULTS: $results ==========');
+      return results;
+    } catch (e, st) {
+      print('[SKEO] ERROR: $e');
+      print('[SKEO] STACKTRACE: $st');
+      rethrow;
     } finally {
       if (shouldClose) effectiveClient.close();
     }
@@ -109,17 +138,15 @@ class Skeo {
   }
 
   static Future<Document> _fetchDocument(String url, http.Client client, Map<String, String> headers) async {
+    print('[SKEO] _fetchDocument: GET $url');
     final response = await client.get(Uri.parse(url), headers: headers);
+    print('[SKEO] _fetchDocument: status=${response.statusCode}, content-length=${response.body.length}');
+    print('[SKEO] _fetchDocument: response headers=${response.headers}');
 
-    // Handle redirects that come as HTML (window.location.href = ...)
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      final doc = html_parser.parse(response.body);
-      doc.baseUri = url;
-      return doc;
-    }
+    // Log first 500 chars of body for debugging
+    final preview = response.body.length > 500 ? response.body.substring(0, 500) : response.body;
+    print('[SKEO] _fetchDocument: body preview:\n$preview');
 
-    // If we got a non-200 status, still try to parse (some hosters return
-    // content with non-200 codes) but also return what we have
     final doc = html_parser.parse(response.body);
     doc.baseUri = url;
     return doc;
