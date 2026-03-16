@@ -1,3 +1,6 @@
+import 'dart:io' as io;
+import 'dart:convert';
+
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
@@ -15,7 +18,6 @@ class Skeo {
         'Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9,de;q=0.8',
-    'Accept-Encoding': 'gzip, deflate',
     'Connection': 'keep-alive',
     'Upgrade-Insecure-Requests': '1',
   };
@@ -61,11 +63,7 @@ class Skeo {
     print('[SKEO] ========== resolveStreamsFromUrl ==========');
     print('[SKEO] Input URL: $url');
 
-    final effectiveClient = client ?? http.Client();
-    final shouldClose = client == null;
     final effectiveHeaders = {..._defaultHeaders, ...headers};
-
-    // Cookie jar for this session
     final cookies = <String, String>{};
 
     try {
@@ -80,87 +78,99 @@ class Skeo {
         effectiveHeaders['Referer'] = '${uri.scheme}://${uri.host}/';
       }
 
-      print('[SKEO] Fetching document (1st request)...');
-      var fetchResult = await _fetchDocument(firstUrl, effectiveClient, effectiveHeaders, cookies);
-      var document = fetchResult.document;
-      var currentUrl = fetchResult.url;
+      // Build list of URLs to try
+      final urlsToTry = <String>[firstUrl];
+      final embedUrl = _toEmbedUrl(firstUrl);
+      if (embedUrl != firstUrl) {
+        urlsToTry.add(embedUrl);
+      }
 
-      // Detect JS redirect page: small body with "Redirecting..." title
-      // and no real content. Re-fetch with cookies that were set.
-      if (_isJsRedirectPage(document)) {
-        print('[SKEO] Detected JS redirect page. Cookies collected: ${cookies.keys.toList()}');
-        print('[SKEO] Fetching document (2nd request with cookies)...');
-        fetchResult = await _fetchDocument(firstUrl, effectiveClient, effectiveHeaders, cookies);
-        document = fetchResult.document;
-        currentUrl = fetchResult.url;
+      for (final tryUrl in urlsToTry) {
+        print('[SKEO] --- Trying URL: $tryUrl ---');
 
-        // If still a redirect page, try without the token requirement
+        final fetchResult = await _fetchDocumentWithRedirects(tryUrl, effectiveHeaders, cookies);
+        final document = fetchResult.document;
+        final finalUrl = fetchResult.url;
+
+        print('[SKEO] Final URL after redirects: $finalUrl');
+        print('[SKEO] HTML length: ${document.outerHtml.length}');
+
         if (_isJsRedirectPage(document)) {
-          print('[SKEO] Still a redirect page. Trying /e/ embed URL...');
-          // Some VOE URLs work better with /e/ prefix
-          final embedUrl = _toEmbedUrl(firstUrl);
-          if (embedUrl != firstUrl) {
-            print('[SKEO] Trying embed URL: $embedUrl');
-            fetchResult = await _fetchDocument(embedUrl, effectiveClient, effectiveHeaders, cookies);
-            document = fetchResult.document;
-            currentUrl = fetchResult.url;
+          print('[SKEO] Got JS redirect page, retrying with cookies...');
+          final retry = await _fetchDocumentWithRedirects(tryUrl, effectiveHeaders, cookies);
+          if (!_isJsRedirectPage(retry.document)) {
+            print('[SKEO] Cookie retry worked!');
+            final results = await _resolveFromDocument(retry.document, retry.url, urlHoster, effectiveHeaders, cookies);
+            if (results.isNotEmpty) return results;
           }
+          continue;
         }
+
+        final results = await _resolveFromDocument(document, finalUrl, urlHoster, effectiveHeaders, cookies);
+        if (results.isNotEmpty) return results;
+        print('[SKEO] No streams found, trying next URL...');
       }
 
-      print('[SKEO] Document ready, url=$currentUrl, HTML length=${document.outerHtml.length}');
-
-      final fitted = urlHoster ?? Hoster.autoFromDocument(document, currentUrl);
-      print('[SKEO] Fitted hoster: ${fitted?.name ?? "NONE"}');
-
-      Document redirected = document;
-      if (fitted != null) {
-        redirected = await fitted.redirect(
-          document,
-          currentUrl,
-          (target) async {
-            print('[SKEO] Following redirect to: $target');
-            final r = await _fetchDocument(target, effectiveClient, effectiveHeaders, cookies);
-            currentUrl = r.url;
-            return r.document;
-          },
-        );
-      }
-
-      if (redirected != document) {
-        print('[SKEO] Hoster redirect happened, new url=$currentUrl');
-      }
-
-      final results = resolveStreamsFromDocument(redirected, sourceUrl: currentUrl, hoster: fitted);
-      print('[SKEO] ========== FINAL RESULTS: $results ==========');
-      return results;
+      print('[SKEO] ========== All URLs exhausted, 0 results ==========');
+      return {};
     } catch (e, st) {
       print('[SKEO] ERROR: $e');
       print('[SKEO] STACKTRACE: $st');
       rethrow;
-    } finally {
-      if (shouldClose) effectiveClient.close();
     }
   }
 
-  /// Detect the VOE JS redirect stub page
-  static bool _isJsRedirectPage(Document document) {
-    final title = document.querySelector('title')?.text.trim().toLowerCase() ?? '';
-    final bodyLen = document.body?.text.trim().length ?? 0;
-    final isRedirect = title.contains('redirect') && bodyLen < 100;
-    print('[SKEO] _isJsRedirectPage: title="$title", bodyTextLen=$bodyLen, result=$isRedirect');
-    return isRedirect;
+  static Future<Set<String>> _resolveFromDocument(
+    Document document,
+    String currentUrl,
+    Hoster? urlHoster,
+    Map<String, String> headers,
+    Map<String, String> cookies,
+  ) async {
+    final fitted = urlHoster ?? Hoster.autoFromDocument(document, currentUrl);
+    print('[SKEO] _resolveFromDocument: hoster=${fitted?.name ?? "NONE"}, url=$currentUrl');
+
+    var redirected = document;
+    var redirectUrl = currentUrl;
+    if (fitted != null) {
+      redirected = await fitted.redirect(
+        document,
+        currentUrl,
+        (target) async {
+          print('[SKEO] Following hoster redirect to: $target');
+          final r = await _fetchDocumentWithRedirects(target, headers, cookies);
+          redirectUrl = r.url;
+          return r.document;
+        },
+      );
+    }
+
+    final results = resolveStreamsFromDocument(
+      redirected,
+      sourceUrl: redirected != document ? redirectUrl : currentUrl,
+      hoster: fitted,
+    );
+    print('[SKEO] Results: $results');
+    return results;
   }
 
-  /// Convert a VOE URL to embed format: https://voe.sx/abc -> https://voe.sx/e/abc
+  static bool _isJsRedirectPage(Document document) {
+    final title = document.querySelector('title')?.text.trim().toLowerCase() ?? '';
+    final html = document.outerHtml;
+    final hasRedirectTitle = title.contains('redirect');
+    final hasPermanentToken = html.contains('permanentToken');
+    final isShortPage = html.length < 2000;
+    final result = hasRedirectTitle || (hasPermanentToken && isShortPage);
+    print('[SKEO] _isJsRedirectPage: title="$title", permanentToken=$hasPermanentToken, htmlLen=${html.length}, result=$result');
+    return result;
+  }
+
   static String _toEmbedUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return url;
-    final segments = uri.pathSegments;
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
     if (segments.isEmpty) return url;
-    // Already an embed URL
     if (segments.first == 'e') return url;
-    // Convert: /xvdpt9qbzek2 -> /e/xvdpt9qbzek2
     return uri.replace(path: '/e/${segments.last}').toString();
   }
 
@@ -189,66 +199,79 @@ class Skeo {
     }
   }
 
-  /// Fetch a document and handle cookie persistence
-  static Future<_FetchResult> _fetchDocument(
+  /// Fetch document using dart:io HttpClient so we can manually follow redirects
+  /// and track the final URL (which http.Client doesn't expose).
+  static Future<_FetchResult> _fetchDocumentWithRedirects(
     String url,
-    http.Client client,
     Map<String, String> headers,
     Map<String, String> cookies,
   ) async {
-    // Add cookies to request
-    final requestHeaders = {...headers};
-    if (cookies.isNotEmpty) {
-      final cookieHeader = cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
-      requestHeaders['Cookie'] = cookieHeader;
-      print('[SKEO] _fetchDocument: sending cookies: $cookieHeader');
-    }
+    final ioClient = io.HttpClient();
+    ioClient.userAgent = null; // We set our own User-Agent header
 
-    print('[SKEO] _fetchDocument: GET $url');
-    final response = await client.get(Uri.parse(url), headers: requestHeaders);
-    print('[SKEO] _fetchDocument: status=${response.statusCode}, body length=${response.body.length}');
+    var currentUrl = url;
+    const maxRedirects = 10;
 
-    // Extract cookies from Set-Cookie headers
-    final setCookie = response.headers['set-cookie'];
-    if (setCookie != null) {
-      _parseCookies(setCookie, cookies);
-      print('[SKEO] _fetchDocument: cookies after parsing: ${cookies.keys.toList()}');
-    }
+    try {
+      for (var i = 0; i < maxRedirects; i++) {
+        print('[SKEO] _fetch: GET $currentUrl (attempt ${i + 1})');
 
-    // Handle HTTP 302/301 redirects (just in case)
-    if (response.statusCode == 301 || response.statusCode == 302) {
-      final location = response.headers['location'];
-      if (location != null) {
-        print('[SKEO] _fetchDocument: HTTP redirect to $location');
-        return _fetchDocument(location, client, headers, cookies);
+        final request = await ioClient.getUrl(Uri.parse(currentUrl));
+
+        // Set headers
+        headers.forEach((key, value) {
+          request.headers.set(key, value);
+        });
+
+        // Set cookies
+        if (cookies.isNotEmpty) {
+          final cookieStr = cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
+          request.headers.set('Cookie', cookieStr);
+        }
+
+        // Don't auto-follow redirects
+        request.followRedirects = false;
+
+        final response = await request.close();
+        final statusCode = response.statusCode;
+
+        // Collect cookies from response
+        for (final cookie in response.cookies) {
+          cookies[cookie.name] = cookie.value;
+        }
+
+        print('[SKEO] _fetch: status=$statusCode, cookies=${cookies.keys.toList()}');
+
+        // Handle redirects manually
+        if (statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308) {
+          final location = response.headers.value('location');
+          if (location != null) {
+            // Resolve relative URLs
+            final resolved = Uri.parse(currentUrl).resolve(location).toString();
+            print('[SKEO] _fetch: redirect -> $resolved');
+            // Drain the response body
+            await response.drain();
+            currentUrl = resolved;
+            continue;
+          }
+        }
+
+        // Read body
+        final body = await response.transform(utf8.decoder).join();
+        print('[SKEO] _fetch: body length=${body.length}');
+
+        final preview = body.length > 500 ? body.substring(0, 500) : body;
+        print('[SKEO] _fetch: body preview:\n$preview');
+
+        final doc = html_parser.parse(body);
+        return _FetchResult(doc, currentUrl);
       }
-    }
 
-    final preview = response.body.length > 500 ? response.body.substring(0, 500) : response.body;
-    print('[SKEO] _fetchDocument: body preview:\n$preview');
-
-    final doc = html_parser.parse(response.body);
-    return _FetchResult(doc, url);
-  }
-
-  /// Parse Set-Cookie header(s) into our cookie jar
-  static void _parseCookies(String setCookieHeader, Map<String, String> cookies) {
-    // Set-Cookie can contain multiple cookies separated by comma,
-    // but also date strings contain commas. Split on pattern "name=value"
-    // at the start of each cookie.
-    final parts = setCookieHeader.split(RegExp(r',(?=[A-Za-z_][A-Za-z0-9_]*=)'));
-    for (final part in parts) {
-      final trimmed = part.trim();
-      if (trimmed.isEmpty) continue;
-      // Extract just name=value (before first ;)
-      final semicolonIdx = trimmed.indexOf(';');
-      final nameValue = semicolonIdx > 0 ? trimmed.substring(0, semicolonIdx) : trimmed;
-      final equalsIdx = nameValue.indexOf('=');
-      if (equalsIdx > 0) {
-        final name = nameValue.substring(0, equalsIdx).trim();
-        final value = nameValue.substring(equalsIdx + 1).trim();
-        cookies[name] = value;
-      }
+      // Max redirects exceeded
+      print('[SKEO] _fetch: max redirects exceeded');
+      return _FetchResult(html_parser.parse(''), currentUrl);
+    } finally {
+      ioClient.close();
     }
   }
 
