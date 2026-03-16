@@ -252,10 +252,25 @@ class VoeHoster extends Hoster {
   VoeHoster._();
   static final instance = VoeHoster._();
 
-  final _urlRegex = RegExp(r'(voe\.sx)/(\w+)', caseSensitive: false);
+  // Updated: VOE uses many domains now (voe.sx, voeunblk.com, voesxunblck.com, etc.)
+  final _urlRegex = RegExp(
+    r'(voe(?:unbl(?:oc)?k|sxunblck)?\.(?:sx|com|net))/(\w+)',
+    caseSensitive: false,
+  );
   final _hlsMatcher = RegExp(r'[\"]hls[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
   final _mp4Matcher = RegExp(r'[\"]mp4[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
-  final _base64Matcher = RegExp(r"var a168c='([^']+)'", multiLine: true, caseSensitive: false);
+  final _base64Matcher = RegExp(r"var\s+\w+\s*=\s*'([A-Za-z0-9+/=]{50,})'", multiLine: true, caseSensitive: false);
+
+  // Fallback: match any long base64 string assigned to a variable
+  final _genericBase64Matcher = RegExp(r"['\"]([A-Za-z0-9+/=]{100,})['\"]", multiLine: true, caseSensitive: false);
+
+  // Direct m3u8/mp4 URL in page source
+  final _directHlsMatcher = RegExp(r"['\"]?(https?://[^'\"<>\s]+\.m3u8(?:\?[^'\"<>\s]*)?)['\"]?", multiLine: true, caseSensitive: false);
+  final _directMp4Matcher = RegExp(r"['\"]?(https?://[^'\"<>\s]+\.mp4(?:\?[^'\"<>\s]*)?)['\"]?", multiLine: true, caseSensitive: false);
+
+  // VOE sometimes puts the source in a "sources" or "file" JS variable
+  final _sourcesMatcher = RegExp(r'''sources\s*[:=]\s*\[\s*\{\s*(?:file|src)\s*:\s*['"](https?://[^'"]+)['"]''', multiLine: true, caseSensitive: false);
+  final _fileMatcher = RegExp(r'''['"]?file['"]?\s*[:=]\s*['"](https?://[^'"]+\.(?:m3u8|mp4)[^'"]*)['"]''', multiLine: true, caseSensitive: false);
 
   final List<String> _junkParts = const ['@\$', '^^', '~@', '%?', '*~', '!!', '#&'];
 
@@ -283,16 +298,19 @@ class VoeHoster extends Hoster {
   @override
   Set<String> resolveStreams(Document document, String sourceUrl) {
     final out = <String>{};
+    final html = document.outerHtml;
 
-    for (final m in _hlsMatcher.allMatches(document.outerHtml)) {
+    // 1) Classic "hls"/"mp4" JSON keys
+    for (final m in _hlsMatcher.allMatches(html)) {
       final link = _tryDecodeUrl(sourceUrl, m.group(1));
       if (link != null) out.add(link);
     }
-    for (final m in _mp4Matcher.allMatches(document.outerHtml)) {
+    for (final m in _mp4Matcher.allMatches(html)) {
       final link = _tryDecodeUrl(sourceUrl, m.group(1));
       if (link != null) out.add(link);
     }
 
+    // 2) application/json script tags (original VOE obfuscation)
     for (final script in document.getElementsByTagName('script')) {
       if ((script.attributes['type'] ?? '').trim().toLowerCase() != 'application/json') continue;
       final decoded = _decodeScriptPayload(script.text);
@@ -303,20 +321,75 @@ class VoeHoster extends Hoster {
       if (direct != null) out.add(direct);
     }
 
-    for (final m in _base64Matcher.allMatches(document.outerHtml)) {
-      final payload = m.group(1);
-      if (payload == null || payload.isEmpty) continue;
+    // 3) Base64 encoded variable (var a168c='...' or similar)
+    for (final m in _base64Matcher.allMatches(html)) {
+      _tryDecodeBase64Payload(sourceUrl, m.group(1), out);
+    }
+
+    // 4) Fallback: try any long base64 string in the page
+    if (out.isEmpty) {
+      for (final m in _genericBase64Matcher.allMatches(html)) {
+        _tryDecodeBase64Payload(sourceUrl, m.group(1), out);
+      }
+    }
+
+    // 5) Direct .m3u8 / .mp4 URLs in page source
+    if (out.isEmpty) {
+      for (final m in _directHlsMatcher.allMatches(html)) {
+        final url = m.group(1);
+        if (url != null && !url.contains('sample') && !url.contains('thumbnail')) {
+          final resolved = resolveUrl(sourceUrl, url);
+          if (resolved != null) out.add(resolved);
+        }
+      }
+      for (final m in _directMp4Matcher.allMatches(html)) {
+        final url = m.group(1);
+        if (url != null && !url.contains('sample') && !url.contains('thumbnail')) {
+          final resolved = resolveUrl(sourceUrl, url);
+          if (resolved != null) out.add(resolved);
+        }
+      }
+    }
+
+    // 6) "sources" or "file" JS patterns
+    if (out.isEmpty) {
+      for (final m in _sourcesMatcher.allMatches(html)) {
+        final resolved = resolveUrl(sourceUrl, m.group(1));
+        if (resolved != null) out.add(resolved);
+      }
+      for (final m in _fileMatcher.allMatches(html)) {
+        final resolved = resolveUrl(sourceUrl, m.group(1));
+        if (resolved != null) out.add(resolved);
+      }
+    }
+
+    return out;
+  }
+
+  /// Tries to decode a base64 payload containing JSON with 'source' and/or 'direct_access_url'
+  void _tryDecodeBase64Payload(String sourceUrl, String? payload, Set<String> out) {
+    if (payload == null || payload.isEmpty) return;
+    try {
+      // Method A: base64 → reversed → JSON
+      final jsonText = utf8.decode(base64.decode(payload)).split('').reversed.join();
+      final decoded = json.decode(jsonText) as Map<String, dynamic>;
+      final source = resolveUrl(sourceUrl, decoded['source'] as String?);
+      final direct = resolveUrl(sourceUrl, decoded['direct_access_url'] as String?);
+      if (source != null) out.add(source);
+      if (direct != null) out.add(direct);
+    } catch (_) {
       try {
-        final jsonText = utf8.decode(base64.decode(payload)).split('').reversed.join();
+        // Method B: base64 → JSON (not reversed)
+        final jsonText = utf8.decode(base64.decode(payload));
         final decoded = json.decode(jsonText) as Map<String, dynamic>;
         final source = resolveUrl(sourceUrl, decoded['source'] as String?);
         final direct = resolveUrl(sourceUrl, decoded['direct_access_url'] as String?);
         if (source != null) out.add(source);
         if (direct != null) out.add(direct);
-      } catch (_) {}
+      } catch (_) {
+        // Not a valid JSON payload, ignore
+      }
     }
-
-    return out;
   }
 
   String? _redirectLocation(Document document) {
