@@ -257,11 +257,12 @@ class VoeHoster extends Hoster {
   final _hlsMatcher = RegExp(r'[\"]hls[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
   final _mp4Matcher = RegExp(r'[\"]mp4[\"]:\s*[\"](.*)[\"]', multiLine: true, caseSensitive: false);
   final _base64Matcher = RegExp(r"var\s+\w+\s*=\s*'([A-Za-z0-9+/=]{50,})'", multiLine: true, caseSensitive: false);
-  final _genericBase64Matcher = RegExp(r"['\"]([A-Za-z0-9+/=]{100,})['\"]", multiLine: true, caseSensitive: false);
-  final _directHlsMatcher = RegExp(r"['\"]?(https?://[^'\"<>\s]+\.m3u8(?:\?[^'\"<>\s]*)?)['\"]?", multiLine: true, caseSensitive: false);
-  final _directMp4Matcher = RegExp(r"['\"]?(https?://[^'\"<>\s]+\.mp4(?:\?[^'\"<>\s]*)?)['\"]?", multiLine: true, caseSensitive: false);
-  final _sourcesMatcher = RegExp(r'''sources\s*[:=]\s*\[\s*\{\s*(?:file|src)\s*:\s*['"](https?://[^'"]+)['"]''', multiLine: true, caseSensitive: false);
-  final _fileMatcher = RegExp(r'''['"]?file['"]?\s*[:=]\s*['"](https?://[^'"]+\.(?:m3u8|mp4)[^'"]*)['"]''', multiLine: true, caseSensitive: false);
+
+  final _genericBase64Matcher = RegExp(r"""['"]\s*([A-Za-z0-9+/=]{100,})\s*['"]""", multiLine: true, caseSensitive: false);
+  final _directHlsMatcher = RegExp(r"""(https?://[^\s'"<>]+\.m3u8[^\s'"<>]*)""", multiLine: true, caseSensitive: false);
+  final _directMp4Matcher = RegExp(r"""(https?://[^\s'"<>]+\.mp4[^\s'"<>]*)""", multiLine: true, caseSensitive: false);
+  final _sourcesMatcher = RegExp(r"""sources\s*[:=]\s*\[\s*\{\s*(?:file|src)\s*:\s*['"](https?://[^'"]+)['"]""", multiLine: true, caseSensitive: false);
+  final _fileMatcher = RegExp(r"""['"]?file['"]?\s*[:=]\s*['"](https?://[^'"]+\.(?:m3u8|mp4)[^'"]*)['"]""", multiLine: true, caseSensitive: false);
 
   final List<String> _junkParts = const ['@\$', '^^', '~@', '%?', '*~', '!!', '#&'];
 
@@ -280,7 +281,7 @@ class VoeHoster extends Hoster {
     final meta = document.head?.querySelectorAll('meta[name=keywords]') ?? const [];
     final matchesMeta = meta.any((e) => (e.attributes['content'] ?? '').trim().toLowerCase() == name.toLowerCase());
     final result = matchesMeta || matchesUrl(sourceUrl);
-    print('[VOE] matchesDocument: matchesMeta=$matchesMeta, matchesUrl=${matchesUrl(sourceUrl)}, result=$result');
+    print('[VOE] matchesDocument: matchesMeta=$matchesMeta, result=$result');
     return result;
   }
 
@@ -288,7 +289,7 @@ class VoeHoster extends Hoster {
   Future<Document> redirect(Document document, String sourceUrl, Future<Document> Function(String p1) fetchDocument) async {
     print('[VOE] redirect: body children=${document.body?.children.length ?? 0}');
     if ((document.body?.children.length ?? 0) > 1) {
-      print('[VOE] redirect: body has >1 children, no redirect needed');
+      print('[VOE] redirect: no redirect needed');
       return document;
     }
     final location = _redirectLocation(document);
@@ -325,7 +326,7 @@ class VoeHoster extends Hoster {
 
     // 1) Classic "hls"/"mp4" JSON keys
     final hlsMatches = _hlsMatcher.allMatches(html).toList();
-    print('[VOE] Step 1a - hlsMatcher matches: ${hlsMatches.length}');
+    print('[VOE] Step 1a - hlsMatcher: ${hlsMatches.length} matches');
     for (final m in hlsMatches) {
       print('[VOE]   hls raw: "${m.group(1)}"');
       final link = _tryDecodeUrl(sourceUrl, m.group(1));
@@ -334,7 +335,7 @@ class VoeHoster extends Hoster {
     }
 
     final mp4Matches = _mp4Matcher.allMatches(html).toList();
-    print('[VOE] Step 1b - mp4Matcher matches: ${mp4Matches.length}');
+    print('[VOE] Step 1b - mp4Matcher: ${mp4Matches.length} matches');
     for (final m in mp4Matches) {
       print('[VOE]   mp4 raw: "${m.group(1)}"');
       final link = _tryDecodeUrl(sourceUrl, m.group(1));
@@ -347,7 +348,8 @@ class VoeHoster extends Hoster {
     for (final script in scripts) {
       if ((script.attributes['type'] ?? '').trim().toLowerCase() != 'application/json') continue;
       print('[VOE]   Found application/json script, length=${script.text.length}');
-      print('[VOE]   Preview: ${script.text.substring(0, script.text.length > 100 ? 100 : script.text.length)}...');
+      final previewLen = script.text.length > 100 ? 100 : script.text.length;
+      print('[VOE]   Preview: ${script.text.substring(0, previewLen)}...');
       final decoded = _decodeScriptPayload(script.text);
       print('[VOE]   Decoded payload: $decoded');
       if (decoded == null) continue;
@@ -360,20 +362,22 @@ class VoeHoster extends Hoster {
 
     // 3) Base64 encoded variable
     final base64Matches = _base64Matcher.allMatches(html).toList();
-    print('[VOE] Step 3 - base64Matcher matches: ${base64Matches.length}');
+    print('[VOE] Step 3 - base64Matcher: ${base64Matches.length} matches');
     for (final m in base64Matches) {
       final payload = m.group(1);
-      print('[VOE]   base64 payload (first 80 chars): ${payload?.substring(0, payload.length > 80 ? 80 : payload.length)}...');
+      final pLen = (payload?.length ?? 0) > 80 ? 80 : (payload?.length ?? 0);
+      print('[VOE]   base64 payload (first $pLen): ${payload?.substring(0, pLen)}...');
       _tryDecodeBase64Payload(sourceUrl, payload, out);
     }
 
     // 4) Generic base64
     if (out.isEmpty) {
       final genericMatches = _genericBase64Matcher.allMatches(html).toList();
-      print('[VOE] Step 4 - genericBase64Matcher matches: ${genericMatches.length}');
+      print('[VOE] Step 4 - genericBase64: ${genericMatches.length} matches');
       for (final m in genericMatches) {
         final payload = m.group(1);
-        print('[VOE]   generic base64 (first 80 chars): ${payload?.substring(0, payload!.length > 80 ? 80 : payload.length)}...');
+        final pLen = (payload?.length ?? 0) > 80 ? 80 : (payload?.length ?? 0);
+        print('[VOE]   generic base64 (first $pLen): ${payload?.substring(0, pLen)}...');
         _tryDecodeBase64Payload(sourceUrl, payload, out);
       }
     } else {
@@ -384,7 +388,7 @@ class VoeHoster extends Hoster {
     if (out.isEmpty) {
       final hlsDirect = _directHlsMatcher.allMatches(html).toList();
       final mp4Direct = _directMp4Matcher.allMatches(html).toList();
-      print('[VOE] Step 5 - directHls matches: ${hlsDirect.length}, directMp4 matches: ${mp4Direct.length}');
+      print('[VOE] Step 5 - directHls: ${hlsDirect.length}, directMp4: ${mp4Direct.length}');
       for (final m in hlsDirect) {
         final url = m.group(1);
         print('[VOE]   direct hls: $url');
@@ -402,14 +406,14 @@ class VoeHoster extends Hoster {
         }
       }
     } else {
-      print('[VOE] Step 5 - skipped (already have results)');
+      print('[VOE] Step 5 - skipped');
     }
 
     // 6) "sources"/"file" patterns
     if (out.isEmpty) {
       final sourcesMatches = _sourcesMatcher.allMatches(html).toList();
       final fileMatches = _fileMatcher.allMatches(html).toList();
-      print('[VOE] Step 6 - sourcesMatcher matches: ${sourcesMatches.length}, fileMatcher matches: ${fileMatches.length}');
+      print('[VOE] Step 6 - sources: ${sourcesMatches.length}, file: ${fileMatches.length}');
       for (final m in sourcesMatches) {
         print('[VOE]   sources: ${m.group(1)}');
         final resolved = resolveUrl(sourceUrl, m.group(1));
@@ -421,7 +425,7 @@ class VoeHoster extends Hoster {
         if (resolved != null) out.add(resolved);
       }
     } else {
-      print('[VOE] Step 6 - skipped (already have results)');
+      print('[VOE] Step 6 - skipped');
     }
 
     print('[VOE] ===== resolveStreams END: ${out.length} results =====');
@@ -435,9 +439,10 @@ class VoeHoster extends Hoster {
     try {
       final decoded = utf8.decode(base64.decode(payload));
       final reversed = decoded.split('').reversed.join();
-      print('[VOE]     Method A: reversed string (first 100): ${reversed.substring(0, reversed.length > 100 ? 100 : reversed.length)}...');
+      final previewLen = reversed.length > 100 ? 100 : reversed.length;
+      print('[VOE]     Method A reversed (first $previewLen): ${reversed.substring(0, previewLen)}...');
       final json_ = json.decode(reversed) as Map<String, dynamic>;
-      print('[VOE]     Method A: decoded JSON keys: ${json_.keys}');
+      print('[VOE]     Method A keys: ${json_.keys}');
       final source = resolveUrl(sourceUrl, json_['source'] as String?);
       final direct = resolveUrl(sourceUrl, json_['direct_access_url'] as String?);
       print('[VOE]     Method A: source=$source, direct=$direct');
@@ -450,9 +455,10 @@ class VoeHoster extends Hoster {
     // Method B: base64 → JSON (not reversed)
     try {
       final decoded = utf8.decode(base64.decode(payload));
-      print('[VOE]     Method B: decoded (first 100): ${decoded.substring(0, decoded.length > 100 ? 100 : decoded.length)}...');
+      final previewLen = decoded.length > 100 ? 100 : decoded.length;
+      print('[VOE]     Method B decoded (first $previewLen): ${decoded.substring(0, previewLen)}...');
       final json_ = json.decode(decoded) as Map<String, dynamic>;
-      print('[VOE]     Method B: decoded JSON keys: ${json_.keys}');
+      print('[VOE]     Method B keys: ${json_.keys}');
       final source = resolveUrl(sourceUrl, json_['source'] as String?);
       final direct = resolveUrl(sourceUrl, json_['direct_access_url'] as String?);
       print('[VOE]     Method B: source=$source, direct=$direct');
@@ -500,15 +506,12 @@ class VoeHoster extends Hoster {
       final jsonText = payload.substring(2, payload.length - 2);
       print('[VOE]     _decodeScriptPayload: input length=${payload.length}');
       final step1 = _shiftLetters(jsonText);
-      print('[VOE]     step1 (shiftLetters, first 50): ${step1.substring(0, step1.length > 50 ? 50 : step1.length)}...');
       final step2 = _replaceJunk(step1).replaceAll('_', '');
-      print('[VOE]     step2 (replaceJunk, length): ${step2.length}');
       final step3 = utf8.decode(base64.decode(step2));
-      print('[VOE]     step3 (base64 decode, first 50): ${step3.substring(0, step3.length > 50 ? 50 : step3.length)}...');
       final step4 = _shiftBack(step3, 3);
-      print('[VOE]     step4 (shiftBack, first 50): ${step4.substring(0, step4.length > 50 ? 50 : step4.length)}...');
       final step5 = utf8.decode(base64.decode(step4.split('').reversed.join())).trim();
-      print('[VOE]     step5 (final JSON, first 100): ${step5.substring(0, step5.length > 100 ? 100 : step5.length)}...');
+      final previewLen = step5.length > 100 ? 100 : step5.length;
+      print('[VOE]     _decodeScriptPayload result (first $previewLen): ${step5.substring(0, previewLen)}...');
       return json.decode(step5) as Map<String, dynamic>;
     } catch (e) {
       print('[VOE]     _decodeScriptPayload FAILED: $e');
@@ -521,10 +524,10 @@ class VoeHoster extends Hoster {
     final trimmed = raw.trim();
     try {
       final decoded = utf8.decode(base64.decode(trimmed));
-      print('[VOE]     _tryDecodeUrl: base64 decoded to "$decoded"');
+      print('[VOE]     _tryDecodeUrl: base64 -> "$decoded"');
       return resolveUrl(sourceUrl, decoded);
     } catch (_) {
-      print('[VOE]     _tryDecodeUrl: not base64, using raw "$trimmed"');
+      print('[VOE]     _tryDecodeUrl: not base64, raw="$trimmed"');
       return resolveUrl(sourceUrl, trimmed);
     }
   }
